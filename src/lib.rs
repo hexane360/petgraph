@@ -144,6 +144,7 @@ mod graph_impl;
 #[cfg(feature = "graphmap")]
 pub mod graphmap;
 mod isomorphism;
+mod subisomorphism;
 mod iter_format;
 mod iter_utils;
 #[cfg(feature = "matrix_graph")]
