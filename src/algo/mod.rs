@@ -27,7 +27,7 @@ use crate::visit::{Data, IntoNodeReferences, NodeRef};
 pub use super::astar::astar;
 pub use super::dijkstra::dijkstra;
 pub use super::isomorphism::{is_isomorphic, is_isomorphic_matching};
-pub use super::subisomorphism::subgraph_isomorphism;
+pub use super::subisomorphism::{subgraph_isomorphism, subgraph_isomorphism_matching};
 pub use super::simple_paths::all_simple_paths;
 
 /// \[Generic\] Return the number of connected components of the graph.

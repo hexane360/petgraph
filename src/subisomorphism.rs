@@ -1,25 +1,18 @@
-#![allow(unused)]
-
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::ops::Index;
-use std::cmp::Ordering;
-use std::iter::{repeat, repeat_with};
+use std::iter::repeat_with;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
 use crate::visit::{
-	GraphBase, GraphRef, IntoEdgeReferences, IntoEdges, IntoNeighbors, IntoNeighborsDirected,
-	IntoNodeIdentifiers, NodeCompactIndexable, NodeCount, NodeIndexable, Reversed, VisitMap,
-	Visitable, GraphProp, GetAdjacencyMatrix
+	GraphBase, GraphRef, IntoNeighbors,
+	NodeCompactIndexable, NodeIndexable,
+	GraphProp, Data, //GetAdjacencyMatrix
 };
-use crate::EdgeType;
 use crate::Undirected;
-use crate::data::Element;
-use crate::scored::MinScored;
-use crate::visit::Walker;
-use crate::visit::{Data, IntoNodeReferences, NodeRef};
+use crate::data::DataMap;
 
-use fixedbitset::{FixedBitSet, IndexRange};
+use fixedbitset::FixedBitSet;
 
 #[derive(Clone)]
 struct FixedBitMatrix {
@@ -27,10 +20,6 @@ struct FixedBitMatrix {
 }
 
 impl FixedBitMatrix {
-	pub fn new() -> Self {
-		Self { m: Vec::new() }
-	}
-
 	pub fn with_capacity(r: usize, c: usize) -> Self {
 		Self {
 			m: repeat_with(|| FixedBitSet::with_capacity(c))
@@ -71,7 +60,7 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 	  N2: Copy + PartialEq,
 {
 	/// Get the graph node matching the given pattern node in the isomorphism.
-	/// O(1)
+	/// O(1) complexity.
 	pub fn get(&self, pattern_node: N1) -> N2 {
 		self.inner[self.graph.to_index(pattern_node)]
 	}
@@ -80,13 +69,15 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 		self.inner[pattern_index]
 	}
 
+	/// Iterate through the node pairings in the isomorphism. The iterator is
+	/// guaranteed to cover each pattern node, but not every graph node.
 	pub fn iter<'b: 'a>(&'b self) -> impl Iterator<Item=(N1, N2)> + ExactSizeIterator + 'b {
 		let graph: &'b G1 = &*self.graph;
 		self.inner.iter().enumerate().map(move |(i, &n2)| (graph.from_index(i), n2))
 	}
 
 	/// Attempt to find the patttern node matching a given graph node.
-	/// Computes in O(N(pattern)) time
+	/// O(N(pattern)) complexity.
 	pub fn search_graph_node(&self, graph_node: N2) -> Option<N1> {
 		self.inner.iter().position(|&n| n == graph_node).map(|i| self.graph.from_index(i))
 	}
@@ -111,50 +102,13 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 	}
 }
 
-struct SubgraphMappingBuilder<'a, G1, N1, N2> {
-	graph: &'a G1,
-	inner: Vec<Option<N2>>,
-	marker: std::marker::PhantomData<N1>,
-}
-
-impl<'a, G1, N1, N2> SubgraphMappingBuilder<'a, G1, N1, N2>
-where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable,
-	  N1: Copy + PartialEq,
-	  N2: Copy + PartialEq,
-{
-	pub fn new(pattern_graph: &'a G1) -> Self {
-		Self {
-			graph: pattern_graph,
-			inner: vec![None; pattern_graph.node_bound()],
-			marker: std::marker::PhantomData,
-		}
-	}
-
-	pub fn insert(&mut self, pattern_node: N1, graph_node: N2) {
-		self.inner[self.graph.to_index(pattern_node)] = Some(graph_node);
-	}
-
-	pub fn insert_index(&mut self, pattern_index: usize, graph_node: N2) {
-		self.inner[pattern_index] = Some(graph_node);
-	}
-
-	pub fn finish(self) -> SubgraphMapping<'a, G1, N1, N2> {
-		SubgraphMapping {
-			graph: self.graph,
-			inner: self.inner.into_iter().map(|e| e.expect("Incomplete subgraph isomorphism")).collect(),
-			marker: self.marker
-		}
-	}
-}
-
 /// Find a subgraph isomorphism - an injective mapping from `pattern` to `graph` which preserves adjacency.
 /// Returns `None` if no isomorphism exists.
 pub fn subgraph_isomorphism<'a, 'b, G1, G2, N1, N2>(pattern: &'a G1, graph: &'b G2) -> Option<SubgraphMapping<'a, G1, N1, N2>>
-where
-&'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
+where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
 &'b G2: GraphRef + GraphBase<NodeId = N2> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
-	N1: Copy + PartialEq + Eq + Hash,
-	N2: Copy + PartialEq + Eq + Hash,
+	  N1: Copy + PartialEq + Eq + Hash,
+	  N2: Copy + PartialEq + Eq + Hash,
 {
 	let rows = pattern.node_bound();
 	let cols = graph.node_bound();
@@ -168,41 +122,70 @@ where
 	// Our goal is to find one node for each row such that no column is repeated
 	let mut m = FixedBitMatrix::with_capacity(rows, cols);
 
-	/*
-	let mut s = String::with_capacity(cols * 5);
-	for col in (0..cols) {
-		s.push_str(&format!(" {} ", graph[graph.from_index(col)]));
-	}
-	println!("{}", s);
-	println!("{}+", repeat("---").take(cols).collect::<String>());
-	s.clear();
-	*/
-
-	for row in (0..rows) {
-		let mut one_possibility = false;
-		for col in (0..cols) {
-			// point is only possible if N(graph point) >= N(index point)
+	for row in 0..rows {
+		for col in 0..cols {
 			let possible = graph.neighbors(graph.from_index(col)).count() >=
 				pattern.neighbors(pattern.from_index(row)).count();
-			one_possibility = one_possibility || possible;
 			m.set(row, col, possible);
-			//s.push_str(if possible { " 1 " } else { " 0 " });
-		}
-		//println!("{}| {}", s, pattern[pattern.from_index(row)]);
-		//s.clear();
-
-		if !one_possibility {
-			//no graph node possibly matches this pattern node
-			return None;
 		}
 	}
 
-	//now enumerate through all possible isomorphisms given matrix
-	let mut f = FixedBitSet::with_capacity(cols); //records which columns have been tried
+	run_subgraph_isomorphism(pattern, graph, m)
+}
+
+/// Find a subgraph isomorphism, additionally requiring node weights to match.
+pub fn subgraph_isomorphism_matching<'a, 'b, G1, G2, N1, N2, NW1, NW2, F>(pattern: &'a G1, graph: &'b G2, node_match: F) -> Option<SubgraphMapping<'a, G1, N1, N2>>
+where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors + Data<NodeWeight=NW1> + DataMap,
+&'b G2: GraphRef + GraphBase<NodeId = N2> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors + Data<NodeWeight=NW2> + DataMap,
+	  N1: Copy + PartialEq + Eq + Hash,
+	  N2: Copy + PartialEq + Eq + Hash,
+	  F: Fn(&NW1, &NW2) -> bool,
+{
+	let rows = pattern.node_bound();
+	let cols = graph.node_bound();
+
+	if rows > cols {
+		//graph isn't big enough to contain pattern
+		return None;
+	}
+
+	// Matrix giving possible mappings from pattern nodes (rows) to graph nodes (cols).
+	// Our goal is to find one node for each row such that no column is repeated
+	let mut m = FixedBitMatrix::with_capacity(rows, cols);
+
+	for row in 0..rows {
+		for col in 0..cols {
+			let possible = node_match(pattern.node_weight(pattern.from_index(row)).unwrap(),
+									  graph.node_weight(graph.from_index(col)).unwrap())
+				&& graph.neighbors(graph.from_index(col)).count() >= pattern.neighbors(pattern.from_index(row)).count();
+			m.set(row, col, possible);
+		}
+	}
+
+	run_subgraph_isomorphism(pattern, graph, m)
+}
+
+fn run_subgraph_isomorphism<'a, 'b, G1, G2, N1, N2>(pattern: &'a G1, graph: &'b G2, m: FixedBitMatrix) -> Option<SubgraphMapping<'a, G1, N1, N2>>
+where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
+	  &'b G2: GraphRef + GraphBase<NodeId = N2> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
+	  N1: Copy + PartialEq + Eq + Hash,
+	  N2: Copy + PartialEq + Eq + Hash,
+{
+	let rows = pattern.node_bound();
+	let cols = graph.node_bound();
+	for row in 0..rows {
+		if m.row(row).count_ones(..) == 0 {
+			// no possibilities for this pattern node
+			return None
+		}
+	}
+
+	//enumerate through all possible isomorphisms given matrix
+	let mut cols_used = FixedBitSet::with_capacity(cols); //records which columns have been tried
 	let mut stack: Vec<usize> = Vec::with_capacity(rows); //stack to record which columns have been assigned
-	let mut m_d = m.clone();
-	//let mut depth = 0;
-	let mut search_start = 0;
+	let mut m_d = m.clone(); //working copy of matrix, refined for the current search
+	let mut search_start = 0; //column to start search at
+	// iterative depth first search through possible mappings
 	loop { //breadth
 		loop { //depth
 			println!("Searching for column, start: {}, stack: {:?}", search_start, &stack);
@@ -213,30 +196,19 @@ where
 			}
 
 			// find first possible column and set matrix accordingly
-			let mut col = None;
-			for c in search_start..cols {
-				if !m_d.row(stack.len())[c] || f[c] {
-					// not a possible match, or already used this column
-					continue
-				}
-
-				// select this column
-				m_d.row_mut(stack.len()).clear();
-				m_d.set(stack.len(), c, true);
-				col = Some(c);
-				break;
-			}
-
-			search_start = 0;
-
-			match col {
+			// TODO optimize this using bitset methods
+			match (search_start..cols).filter(|&c| {
+				m_d.row(stack.len())[c] && !cols_used[c] //is possible and not already used
+			}).next() {
 				None => break,
 				Some(c) => {
 					println!("Selecting column {} at row {}", c, stack.len());
-					//m_d.push(m_d[depth].clone());
-					//depth += 1;
+					//clear all but c in this row
+					m_d.row_mut(stack.len()).clear();
+					m_d.set(stack.len(), c, true);
 					stack.push(c);
-					f.set(c, true);
+					cols_used.set(c, true);
+					search_start = 0;
 				}
 			}
 
@@ -262,20 +234,8 @@ where
 
 				let isomorphism = SubgraphMapping::from_vec(pattern, stack.iter().map(|&i| graph.from_index(i)).collect());
 
-				//let mut map = SubgraphMappingBuilder::new(pattern);
-
-				/*
-				for row in (0..rows) {
-					let col = m_d.row(row).ones().next().unwrap();
-					let pattern_node = pattern.from_index(row);
-					let graph_node = graph.from_index(col);
-					//map.insert(&pattern[pattern.from_index(row)], (graph.from_index(col), &graph[graph.from_index(col)]));
-					map.insert_index(row, graph_node);
-				}
-				let map = map.finish();
-				*/
 				let mut matches = true;
-				for row in (0..rows) {
+				for row in 0..rows {
 					let graph_node = isomorphism.get_index(row);
 					let graph_neighbors: HashSet<_> = graph.neighbors(graph_node).collect();
 					if !pattern.neighbors(pattern.from_index(row)).all(|n| graph_neighbors.contains(&isomorphism[n])) {
@@ -297,15 +257,13 @@ where
 
 		// decrement depth and resume search elsewhere
 		let c = stack.pop().unwrap();
-		f.set(c, false);
+		cols_used.set(c, false);
 		//depth -= 1;
 		//overwrite working matrix row with the original copy
 		m_d.copy_row_from(&m, stack.len());
 		//*m_d.row_mut(stack.len()) = m.row(stack.len()).clone();
 		search_start = c+1;
 	}
-
-	None
 }
 
 #[cfg(test)]
