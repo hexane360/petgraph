@@ -1,8 +1,5 @@
-use std::collections::HashSet;
 use std::ops::Index;
 use std::iter::repeat_with;
-use std::hash::Hash;
-use std::marker::PhantomData;
 
 use crate::visit::{
 	GraphBase, GraphRef, IntoNeighbors,
@@ -48,13 +45,12 @@ impl FixedBitMatrix {
 	}
 }
 
-pub struct SubgraphMapping<'a, G1, N1, N2> {
+pub struct SubgraphMapping<'a, G1, N2> {
 	graph: &'a G1,
 	inner: Vec<N2>,
-	marker: PhantomData<N1>,
 }
 
-impl<'a, G1, N1, N2> SubgraphMapping<'a, G1, N1, N2>
+impl<'a, G1, N1, N2> SubgraphMapping<'a, G1, N2>
 where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable,
 	  N1: Copy + PartialEq,
 	  N2: Copy + PartialEq,
@@ -86,12 +82,11 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 		Self {
 			graph,
 			inner: v,
-			marker: PhantomData,
 		}
 	}
 }
 
-impl<'a, G1, N1, N2> Index<N1> for SubgraphMapping<'a, G1, N1, N2>
+impl<'a, G1, N1, N2> Index<N1> for SubgraphMapping<'a, G1, N2>
 where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable,
 	  N1: Copy + PartialEq,
 	  N2: Copy + PartialEq,
@@ -104,11 +99,11 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 
 /// Find a subgraph isomorphism - an injective mapping from `pattern` to `graph` which preserves adjacency.
 /// Returns `None` if no isomorphism exists.
-pub fn subgraph_isomorphism<'a, 'b, G1, G2, N1, N2>(pattern: &'a G1, graph: &'b G2) -> Option<SubgraphMapping<'a, G1, N1, N2>>
+pub fn subgraph_isomorphism<'a, 'b, G1, G2, N1, N2>(pattern: &'a G1, graph: &'b G2) -> Option<SubgraphMapping<'a, G1, N2>>
 where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
 &'b G2: GraphRef + GraphBase<NodeId = N2> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
-	  N1: Copy + PartialEq + Eq + Hash,
-	  N2: Copy + PartialEq + Eq + Hash,
+	  N1: Copy + PartialEq + Eq,
+	  N2: Copy + PartialEq + Eq,
 {
 	let rows = pattern.node_bound();
 	let cols = graph.node_bound();
@@ -133,12 +128,25 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 	run_subgraph_isomorphism(pattern, graph, m)
 }
 
-/// Find a subgraph isomorphism, additionally requiring node weights to match.
-pub fn subgraph_isomorphism_matching<'a, 'b, G1, G2, N1, N2, NW1, NW2, F>(pattern: &'a G1, graph: &'b G2, node_match: F) -> Option<SubgraphMapping<'a, G1, N1, N2>>
+/// Find a subgraph isomorphism, additionally requiring node weights to be equal.
+pub fn subgraph_isomorphism_eq<'a, 'b, G1, G2, N1, N2, NW1, NW2>(pattern: &'a G1, graph: &'b G2) -> Option<SubgraphMapping<'a, G1, N2>>
+where
+	&'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors + Data<NodeWeight=NW1> + DataMap,
+	&'b G2: GraphRef + GraphBase<NodeId = N2> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors + Data<NodeWeight=NW2> + DataMap,
+	N1: Copy + PartialEq + Eq,
+	N2: Copy + PartialEq + Eq,
+	NW1: PartialEq<NW2>
+{
+	subgraph_isomorphism_matching(pattern, graph, PartialEq::eq)
+}
+
+
+/// Find a subgraph isomorphism, additionally using a function to match compatible node weights.
+pub fn subgraph_isomorphism_matching<'a, 'b, G1, G2, N1, N2, NW1, NW2, F>(pattern: &'a G1, graph: &'b G2, node_match: F) -> Option<SubgraphMapping<'a, G1, N2>>
 where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors + Data<NodeWeight=NW1> + DataMap,
 &'b G2: GraphRef + GraphBase<NodeId = N2> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors + Data<NodeWeight=NW2> + DataMap,
-	  N1: Copy + PartialEq + Eq + Hash,
-	  N2: Copy + PartialEq + Eq + Hash,
+	  N1: Copy + PartialEq + Eq,
+	  N2: Copy + PartialEq + Eq,
 	  F: Fn(&NW1, &NW2) -> bool,
 {
 	let rows = pattern.node_bound();
@@ -165,11 +173,11 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 	run_subgraph_isomorphism(pattern, graph, m)
 }
 
-fn run_subgraph_isomorphism<'a, 'b, G1, G2, N1, N2>(pattern: &'a G1, graph: &'b G2, m: FixedBitMatrix) -> Option<SubgraphMapping<'a, G1, N1, N2>>
+fn run_subgraph_isomorphism<'a, 'b, G1, G2, N1, N2>(pattern: &'a G1, graph: &'b G2, mut m: FixedBitMatrix) -> Option<SubgraphMapping<'a, G1, N2>>
 where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
 	  &'b G2: GraphRef + GraphBase<NodeId = N2> + NodeIndexable + NodeCompactIndexable + GraphProp<EdgeType = Undirected> + IntoNeighbors,
-	  N1: Copy + PartialEq + Eq + Hash,
-	  N2: Copy + PartialEq + Eq + Hash,
+	  N1: Copy + PartialEq + Eq,
+	  N2: Copy + PartialEq + Eq,
 {
 	let rows = pattern.node_bound();
 	let cols = graph.node_bound();
@@ -187,8 +195,34 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 	let mut search_start = 0; //column to start search at
 	// iterative depth first search through possible mappings
 	loop { //breadth
-		loop { //depth
+		'depth: loop { //depth
 			println!("Searching for column, start: {}, stack: {:?}", search_start, &stack);
+
+			// refinement procedure
+			for row in 0..rows {
+				for col in 0..cols {
+					if !m.row(row)[col] { continue; }
+					// for each possible combination
+					for neighbor in pattern.neighbors(pattern.from_index(row)) {
+						// each neighbor in pattern
+						let mut found = false;
+						for col_neighbor in graph.neighbors(graph.from_index(col)) {
+							// must have a candidate
+							if m.row(pattern.to_index(neighbor))[graph.to_index(col_neighbor)] {
+								found = true;
+								break;
+							}
+						}
+						if !found {
+							m.row_mut(row).set(col, false);
+							break;
+						}
+					}
+				}
+				if m.row(row).count_ones(..) == 0 {
+					return None;
+				}
+			}
 
 			if m_d.row(stack.len()).count_ones(search_start..) == 0 {
 				// no possibilities for this pattern node
@@ -215,39 +249,21 @@ where &'a G1: GraphRef + GraphBase<NodeId = N1> + NodeIndexable + NodeCompactInd
 			if stack.len() == rows {
 				println!("Checking for isomorphism, stack: {:?}", &stack);
 
-				/*
-				for col in (0..cols) {
-					s.push_str(&format!(" {} ", graph[graph.from_index(col)]));
-				}
-				println!("{}", s);
-				println!("{}+", repeat("---").take(cols).collect::<String>());
-				s.clear();
-
-				for row in (0..rows) {
-					for col in (0..cols) {
-						s.push_str(if m_d.row(row)[col] { " 1 " } else { " 0 " });
-					}
-					println!("{}| {}", s, pattern[pattern.from_index(row)]);
-					s.clear();
-				}
-				*/
-
 				let isomorphism = SubgraphMapping::from_vec(pattern, stack.iter().map(|&i| graph.from_index(i)).collect());
 
-				let mut matches = true;
+				//let mut matches = true;
+				let mut graph_neighbors = FixedBitSet::with_capacity(cols);
 				for row in 0..rows {
 					let graph_node = isomorphism.get_index(row);
-					let graph_neighbors: HashSet<_> = graph.neighbors(graph_node).collect();
-					if !pattern.neighbors(pattern.from_index(row)).all(|n| graph_neighbors.contains(&isomorphism[n])) {
-						matches = false;
-						break;
+					graph_neighbors.clear();
+					for neighbor in graph.neighbors(graph_node) {
+						graph_neighbors.set(graph.to_index(neighbor), true);
+					}
+					if !pattern.neighbors(pattern.from_index(row)).all(|n| graph_neighbors[graph.to_index(isomorphism[n])]) {
+						break 'depth;
 					}
 				}
-				if matches {
-					return Some(isomorphism);
-				} else {
-					break
-				}
+				return Some(isomorphism);
 			}
 		}
 
